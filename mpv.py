@@ -1,18 +1,12 @@
-
 from ctypes import *
-import threading
-import os
-import asyncio
-from warnings import warn
-from functools import partial
+import platform
 
-# vim: ts=4 sw=4
-
-
-if os.name == 'nt':
+if platform.system() == 'Windows':
     backend = CDLL('mpv-1.dll')
-else:
-    backend = CDLL('libmpv.so')
+elif platform.system() == 'Linux':
+    backend = CDLL('libmpv.so.1')
+elif platform.system() == 'Darwin':
+    backend = CDLL('libmpv.dylib')
 
 
 class MpvHandle(c_void_p):
@@ -51,15 +45,14 @@ class ErrorCode:
             -12:    lambda *a: SystemError('Error running mpv command', *a)
         }
 
-    @staticmethod
+    @classmethod
     def DEFAULT_ERROR_HANDLER(ec, *args):
-        return ValueError(_mpv_error_string(ec).decode(), ec, *args)
+        return ValueError(_mpv_error_string(ec).decode(), ec, *a)
 
     @classmethod
     def raise_for_ec(kls, func, *args):
         ec = func(*args)
-        ec = 0 if ec > 0 else ec
-        ex = kls.EXCEPTION_DICT.get(ec , kls.DEFAULT_ERROR_HANDLER)
+        ex = kls.EXCEPTION_DICT.get(ec, kls.DEFAULT_ERROR_HANDLER)
         if ex:
             raise ex(ec, *args)
 
@@ -72,11 +65,18 @@ class MpvFormat(c_int):
     INT64       = 4
     DOUBLE      = 5
     NODE        = 6
-    NODE_ARRAY  = 7
-    NODE_MAP    = 8
-    
+    NODE_ARRAY  = 7  # Used by NODE
+    NODE_MAP    = 8  # Used by NODE
+    BYTE_ARRAY  = 9  # Used by NODE
+
     def __repr__(self):
-        return ['NONE', 'STRING', 'OSD_STRING', 'FLAG', 'INT64', 'DOUBLE', 'NODE', 'NODE_ARRAY', 'NODE_MAP'][self.value]
+        return ['NONE', 'STRING', 'OSD_STRING', 'FLAG', 'INT64', 'DOUBLE',
+                'NODE', 'NODE_ARRAY', 'NODE_MAP', 'BYTE_ARRAY'][self.value]
+
+    @staticmethod
+    def ctype(value):
+        return [None, c_char_p, c_char_p, c_int, c_longlong, c_double, MpvNode,
+                MpvNodeList, MpvNodeList, MpvByteArray][value]
 
 
 
@@ -111,6 +111,7 @@ class MpvEventID(c_int):
             CLIENT_MESSAGE, VIDEO_RECONFIG, AUDIO_RECONFIG, METADATA_UPDATE, SEEK, PLAYBACK_RESTART, PROPERTY_CHANGE,
             CHAPTER_CHANGE )
 
+
 class MpvEvent(Structure):
     _fields_ = [('event_id', MpvEventID),
                 ('error', c_int),
@@ -130,21 +131,79 @@ class MpvEvent(Structure):
                 'reply_userdata': self.reply_userdata,
                 'event': cast(self.data, POINTER(dtype)).contents.as_dict() if dtype else None}
 
+
 class MpvEventProperty(Structure):
     _fields_ = [('name', c_char_p),
                 ('format', MpvFormat),
                 ('data', c_void_p)]
+
     def as_dict(self):
-        if self.format.value == MpvFormat.STRING:
-            proptype, _access = ALL_PROPERTIES.get(self.name, (str, None))
-            return {'name': self.name.decode(),
-                    'format': self.format,
-                    'data': self.data,
-                    'value': proptype(cast(self.data, POINTER(c_char_p)).contents.value.decode())}
+        dpointer = cast(self.data, POINTER(MpvFormat.ctype(self.format.value)))
+        if self.format.value == MpvFormat.NONE:
+            data = None
+        elif self.format.value == MpvFormat.NODE:
+            data = dpointer.contents.as_dict()
+        elif self.format.value == MpvFormat.STRING:
+            data = dpointer.contents.value.decode()
         else:
-            return {'name': self.name.decode(),
-                    'format': self.format,
-                    'data': self.data}
+            data = dpointer.contents.value
+        return {'name': self.name.decode(),
+                'format': self.format,
+                'data': data}
+
+
+class MpvNodeList(Structure):
+
+    def as_list(self):
+        return [self.values[i] for i in range(self.num)]
+
+    def as_dict(self):
+        return {self.keys[i].decode(): self.values[i] for i in range(self.num)}
+
+
+class MpvByteArray(Structure):
+    _fields_ = [('data', c_void_p),
+                ('size', c_size_t)]
+
+
+class _MpvNodeUnion(Union):
+    _fields_ = [('string', c_char_p),
+                ('flag', c_int),
+                ('int64', c_longlong),
+                ('double_', c_double),
+                ('list', POINTER(MpvNodeList)),
+                ('ba', POINTER(MpvByteArray))]
+
+
+class MpvNode(Structure):
+    _anonymous_ = ('u',)
+    _fields_ = [('u', _MpvNodeUnion),
+                ('format', MpvFormat)]
+
+    def as_dict(self):
+        # this doesn't work with {}[] instead of if statements.
+        if self.format.value in [MpvFormat.STRING, MpvFormat.OSD_STRING]:
+            return self.string.decode()
+        elif self.format.value == MpvFormat.FLAG:
+            return bool(self.flag)
+        elif self.format.value == MpvFormat.INT64:
+            return self.int64
+        elif self.format.value == MpvFormat.DOUBLE:
+            return self.double_
+        elif self.format.value == MpvFormat.NODE_ARRAY:
+            return [node.as_dict() for node in self.list.contents.as_list()]
+        elif self.format.value == MpvFormat.NODE_MAP:
+            return {key: node.as_dict() for key, node in self.list.contents.as_dict().items()}
+        elif self.format.value == MpvFormat.BYTE_ARRAY:
+            raise NotImplementedError
+        else:
+            return None
+
+
+MpvNodeList._fields_ = [('num', c_int),
+                        ('values', POINTER(MpvNode)),
+                        ('keys', POINTER(c_char_p))]
+
 
 class MpvEventLogMessage(Structure):
     _fields_ = [('prefix', c_char_p),
@@ -152,9 +211,8 @@ class MpvEventLogMessage(Structure):
                 ('text', c_char_p)]
 
     def as_dict(self):
-        return { 'prefix': self.prefix.decode(),
-                 'level':  self.level.decode(),
-                 'text':   self.text.decode().rstrip() }
+        return {name: getattr(self, name) for name, _t in self._fields_}
+
 
 class MpvEventEndFile(c_int):
     EOF_OR_INIT_FAILURE = 0
@@ -165,6 +223,7 @@ class MpvEventEndFile(c_int):
     def as_dict(self):
         return {'reason': self.value}
 
+
 class MpvEventScriptInputDispatch(Structure):
     _fields_ = [('arg0', c_int),
                 ('type', c_char_p)]
@@ -172,12 +231,13 @@ class MpvEventScriptInputDispatch(Structure):
     def as_dict(self):
         pass # TODO
 
+
 class MpvEventClientMessage(Structure):
     _fields_ = [('num_args', c_int),
                 ('args', POINTER(c_char_p))]
 
     def as_dict(self):
-        return { 'args': [ self.args[i].value for i in range(self.num_args.value) ] }
+        return {'args': [self.args[i].value for i in range(self.num_args.value)]}
 
 WakeupCallback = CFUNCTYPE(None, c_void_p)
 
@@ -187,23 +247,30 @@ def _handle_func(name, args=[], res=None):
     if res is not None:
         func.restype = res
     func.argtypes = [MpvHandle] + args
+
     def wrapper(*args):
         if res is not None:
             return func(*args)
         else:
             ErrorCode.raise_for_ec(func, *args)
-    globals()['_'+name] = wrapper
+    globals()['_' + name] = wrapper
+
 
 backend.mpv_client_api_version.restype = c_ulong
+
+
 def _mpv_client_api_version():
     ver = backend.mpv_client_api_version()
-    return ver>>16, ver&0xFFFF
+    return ver >> 16, ver & 0xFFFF
 
 backend.mpv_free.argtypes = [c_void_p]
 _mpv_free = backend.mpv_free
 
 backend.mpv_create.restype = MpvHandle
 _mpv_create = backend.mpv_create
+
+backend.mpv_free_node_contents.argtypes = [MpvNode]
+_mpv_free_node_contents = backend.mpv_free_node_contents
 
 _handle_func('mpv_create_client', [c_char_p], MpvHandle)
 _handle_func('mpv_client_name', [], c_char_p)
@@ -248,32 +315,20 @@ _handle_func('mpv_set_wakeup_callback', [WakeupCallback, c_void_p], c_int)
 _handle_func('mpv_get_wakeup_pipe', [], c_int)
 
 
-class ynbool:
-    def __init__(self, val=False):
-        self.val = bool(val and val not in (b'no', 'no'))
-
-    def __bool__(self):
-        return bool(self.val)
-
-    def __str__(self):
-        return 'yes' if self.val else 'no'
-
-    def __repr__(self):
-        return str(self.val)
-
-    def __eq__(self, other):
-        return str(self) == other or bool(self) == other
-
 def _ensure_encoding(possibly_bytes):
     return possibly_bytes.decode() if type(possibly_bytes) is bytes else possibly_bytes
 
 
 def _event_generator(handle):
     while True:
-        event = _mpv_wait_event(handle, -1).contents
+        try:
+            event = _mpv_wait_event(handle, -1).contents
+        except OSError as e:
+            raise StopIteration(str(e))
         if event.event_id.value == MpvEventID.NONE:
             raise StopIteration()
         yield event
+
 
 def load_lua():
     """ Use this function if you intend to use mpv's built-in lua interpreter. This is e.g. needed for playback of
@@ -281,63 +336,25 @@ def load_lua():
     CDLL('liblua.so', mode=RTLD_GLOBAL)
 
 
-def _event_loop(event_handle, playback_cond, event_callbacks, property_handlers):
-    for event in _event_generator(event_handle):
-        try:
-            devent = event.as_dict() # copy data from ctypes
-            eid = devent['event_id']
-            if eid in (MpvEventID.SHUTDOWN, MpvEventID.END_FILE, MpvEventID.PAUSE):
-                with playback_cond:
-                    playback_cond.notify_all()
-            if eid == MpvEventID.PROPERTY_CHANGE:
-                pc, handlerid  = devent['event'], devent['reply_userdata']&0Xffffffffffffffff
-                if handlerid in property_handlers:
-                    if 'value' in pc:
-                        property_handlers[handlerid](pc['name'], pc['value'])
-                    else:
-                        property_handlers[handlerid](pc['name'], pc['data'], pc['format'])
-            if eid == MpvEventID.LOG_MESSAGE and log_handler is not None:
-                ev = devent['event']
-                log_handler('{}: {}: {}'.format(ev['level'], ev['prefix'], ev['text']))
-            for callback in event_callbacks:
-                callback.call(devent)
-            if eid == MpvEventID.SHUTDOWN:
-                _mpv_detach_destroy(event_handle)
-                return
-        except:
-            pass # It seems that when this thread runs into an exception, the MPV core is not able to terminate properly
-                 # anymore. FIXME
-
 class MPV:
     """ See man mpv(1) for the details of the implemented commands. """
-    def __init__(self, log_handler=None, **kwargs):
+    def __init__(self, **kwargs):
         """ Create an MPV instance.
-        
-        Any kwargs given will be passed to mpv as options. """
 
+        Any kwargs given will be passed to mpv as options. """
         self.handle = _mpv_create()
 
         _mpv_set_option_string(self.handle, b'audio-display', b'no')
-        istr = lambda o: ('yes' if o else 'no') if type(o) is bool else str(o)
-        for k,v in kwargs.items():
-            _mpv_set_option_string(self.handle, k.replace('_', '-').encode(), istr(v).encode())
+
+        def istr(o):
+            return ('yes' if o else 'no') if type(o) is bool else str(o)
+
+        for k, v in kwargs.items():
+            try:
+                _mpv_set_option_string(self.handle, k.replace('_', '-').encode(), istr(v).encode())
+            except Exception as e:
+                pass
         _mpv_initialize(self.handle)
-
-        self.event_callbacks = []
-        self._property_handlers = {}
-        self._playback_cond = threading.Condition()
-        self._event_handle = _mpv_create_client(self.handle, b'mpv-python-event-handler-thread')
-        loop = partial(_event_loop, self._event_handle, self._playback_cond, self.event_callbacks, self._property_handlers)
-        self._event_thread = threading.Thread(target=loop, daemon=True, name='MPVEventHandlerThread')
-        self._event_thread.start()
-
-        if log_handler is not None:
-            self.set_loglevel('terminal-default')
-    
-    def wait_for_playback(self):
-        """ Waits until playback of the current title is paused or done """
-        with self._playback_cond:
-            self._playback_cond.wait()
 
     def __del__(self):
         if self.handle:
@@ -346,21 +363,29 @@ class MPV:
     def terminate(self):
         self.handle, handle = None, self.handle
         _mpv_terminate_destroy(handle)
-        self._event_thread.join()
 
-    def set_loglevel(self, level):
+    def terminate_destroy(self):
+        _mpv_terminate_destroy(self.handle)
+
+    def detach_destroy(self):
+        _mpv_detach_destroy(self.handle)
+
+    def request_log_messages(self, level):
         _mpv_request_log_messages(self.handle, level.encode())
+
+    def observe_property(self, name, mpv_format):
+        _mpv_observe_property(self.handle, 0, name.encode(), mpv_format)
 
     def command(self, name, *args):
         """ Execute a raw command """
-        args = [name.encode()] + [ str(arg).encode() for arg in args if arg is not None ] + [None]
-        _mpv_command(self.handle, (c_char_p*len(args))(*args))
+        args = [name.encode()] + [str(arg).encode() for arg in args if arg is not None] + [None]
+        _mpv_command(self.handle, (c_char_p * len(args))(*args))
 
     def seek(self, amount, reference="relative", precision="default-precise"):
         self.command('seek', amount, reference, precision)
 
     def revert_seek(self):
-        self.command('revert_seek');
+        self.command('revert_seek')
 
     def frame_step(self):
         self.command('frame_step')
@@ -368,12 +393,9 @@ class MPV:
     def frame_back_step(self):
         self.command('frame_back_step')
 
-    def _set_property(self, name, value):
-        self.command('set_property', name, str(value))
-    
     def _add_property(self, name, value=None):
         self.command('add_property', name, value)
-    
+
     def _cycle_property(self, name, direction='up'):
         self.command('cycle_property', name, direction)
 
@@ -406,7 +428,7 @@ class MPV:
 
     def playlist_move(self, index1, index2):
         self.command('playlist_move', index1, index2)
-    
+
     def run(self, command, *args):
         self.command('run', command, *args)
 
@@ -424,10 +446,10 @@ class MPV:
 
     def sub_reload(self, sub_id=None):
         self.command('sub_reload', sub_id)
-    
+
     def sub_step(self, skip):
         self.command('sub_step', skip)
-    
+
     def sub_seek(self, skip):
         self.command('sub_seek', skip)
 
@@ -442,13 +464,13 @@ class MPV:
 
     def discnav(self, command):
         self.command('discnav', command)
-    
+
     def write_watch_later_config(self):
         self.command('write_watch_later_config')
-    
+
     def overlay_add(self, overlay_id, x, y, file_or_fd, offset, fmt, w, h, stride):
         self.command('overlay_add', overlay_id, x, y, file_or_fd, offset, fmt, w, h, stride)
-    
+
     def overlay_remove(self, overlay_id):
         self.command('overlay_remove', overlay_id)
 
@@ -458,210 +480,185 @@ class MPV:
     def script_message_to(self, target, *args):
         self.command('script_message_to', target, *args)
 
-    def observe_property(self, name, handler):
-        self._property_handlers[hash(handler)] = handler
-        _mpv_observe_property(self._event_handle, hash(handler), name.encode(), MpvFormat.STRING)
-
-    def unobserve_property(self, handler):
-        handlerid = hash(handler)
-        _mpv_unobserve_property(self._event_handle, handlerid)
-        if handlerid in self._property_handlers:
-            del self._property_handlers[handlerid]
-    
-    @property
-    def metadata(self):
-        raise NotImplementedError
-
-    @property
-    def chapter_metadata(self):
-        raise NotImplementedError
-
-    @property
-    def vf_metadata(self):
-        raise NotImplementedError
-    
     # Convenience functions
     def play(self, filename):
         self.loadfile(filename)
 
-    # Complex properties
+    def stop(self):
+        self.command('stop')
 
-    _VIDEO_PARAMS_LIST = (
-            ('pixelformat',     str),
-            ('w',               int),
-            ('h',               int),
-            ('dw',              int),
-            ('dh',              int),
-            ('aspect',          float),
-            ('par',             float),
-            ('colormatrix',     str),
-            ('colorlevels',     str),
-            ('chroma-location', str),
-            ('rotate',          int))
+    def _get_property(self, prop, mpv_format):
+        if mpv_format == MpvFormat.NONE:
+            return None
+        res = MpvFormat.ctype(mpv_format)()
+        _mpv_get_property(self.handle, prop.encode(), mpv_format, addressof(res))
+        if mpv_format in [MpvFormat.STRING, MpvFormat.OSD_STRING]:
+            data = _ensure_encoding(res.value)
+            _mpv_free(res)
+            return data
+        elif mpv_format == MpvFormat.FLAG:
+            return bool(res.value)
+        elif mpv_format == MpvFormat.INT64:
+            return int(res.value)
+        elif mpv_format == MpvFormat.DOUBLE:
+            return float(res.value)
+        elif mpv_format == MpvFormat.NODE:
+            data = res.as_dict()
+            _mpv_free_node_contents(res)
+            return data
 
-    @property
-    def video_params(self):
-        return self._get_dict('video-params/', _VIDEO_PARAMS_LIST)
+    def _set_property(self, prop, mpv_format, value):
+        if mpv_format == MpvFormat.NONE:
+            return None
+        val = MpvFormat.ctype(mpv_format)()
+        if mpv_format in [MpvFormat.STRING, MpvFormat.OSD_STRING]:
+            val.value = value.encode()
+        elif mpv_format == MpvFormat.FLAG:
+            val.value = int(value)
+        elif mpv_format == MpvFormat.INT64:
+            val.value = int(res)
+        elif mpv_format == MpvFormat.DOUBLE:
+            val.value = float(value)
+        elif mpv_format == MpvFormat.NODE:
+            raise NotImplementedError
+        _mpv_set_property(self.handle, prop.encode(), mpv_format, addressof(val))
 
-    @property
-    def video_out_params(self):
-        return self._get_dict('video-out-params/', _VIDEO_PARAMS_LIST)
-
-    @property
-    def playlist(self):
-        return self._get_list('playlist/', (('filename', str),))
-    @property
-    def track_list(self):
-        return self._get_list('track-list/', (
-                         ('id',                 int),
-                         ('type',               str),
-                         ('src-id',             int),
-                         ('title',              str),
-                         ('lang',               str),
-                         ('albumart',           ynbool),
-                         ('default',            ynbool),
-                         ('external',           ynbool),
-                         ('external-filename',  str),
-                         ('codec',              str),
-                         ('selected',           ynbool)))
-    @property
-    def chapter_list(self):
-        return self._get_dict('chapter-list/', (('title', str), ('time', float)))
-
-    def _get_dict(self, prefix, props):
-        return { name: proptype(_ensure_encoding(_mpv_get_property_string(self.handle, (prefix+name).encode()))) for name, proptype in props }
-
-    def _get_list(self, prefix, props):
-        count = int(_ensure_encoding(_mpv_get_property_string(self.handle, (prefix+'count').encode())))
-        return [ self._get_dict(prefix+str(index)+'/', props) for index in range(count)]
-            
-    # TODO: af, vf properties
-    # TODO: edition-list
-    # TODO property-mapped options
 
 ALL_PROPERTIES = {
-        'osd-level':                   (int,    'rw'),
-        'osd-scale':                   (float,  'rw'),
-        'loop':                        (str,    'rw'),
-        'loop-file':                   (str,    'rw'),
-        'speed':                       (float,  'rw'),
-        'filename':                    (str,    'r'),
-        'file-size':                   (int,    'r'),
-        'path':                        (str,    'r'),
-        'media-title':                 (str,    'r'),
-        'stream-pos':                  (int,    'rw'),
-        'stream-end':                  (int,    'r'),
-        'length':                      (float,  'r'),
-        'avsync':                      (float,  'r'),
-        'total-avsync-change':         (float,  'r'),
-        'drop-frame-count':            (int,    'r'),
-        'percent-pos':                 (float,  'rw'),
-        'ratio-pos':                   (float,  'rw'),
-        'time-pos':                    (float,  'rw'),
-        'time-start':                  (float,  'r'),
-        'time-remaining':              (float,  'r'),
-        'playtime-remaining':          (float,  'r'),
-        'chapter':                     (int,    'rw'),
-        'edition':                     (int,    'rw'),
-        'disc-titles':                 (int,    'r'),
-        'disc-title':                  (str,    'rw'),
-        'disc-menu-active':            (ynbool, 'r'),
-        'chapters':                    (int,    'r'),
-        'editions':                    (int,    'r'),
-        'angle':                       (int,    'rw'),
-        'pause':                       (ynbool, 'rw'),
-        'core-idle':                   (ynbool, 'r'),
-        'cache':                       (int,    'r'),
-        'cache-size':                  (int,    'rw'),
-        'pause-for-cache':             (ynbool, 'r'),
-        'eof-reached':                 (ynbool, 'r'),
-        'pts-association-mode':        (str,    'rw'),
-        'hr-seek':                     (ynbool, 'rw'),
-        'volume':                      (float,  'rw'),
-        'mute':                        (ynbool, 'rw'),
-        'audio-delay':                 (float,  'rw'),
-        'audio-format':                (str,    'r'),
-        'audio-codec':                 (str,    'r'),
-        'audio-bitrate':               (float,  'r'),
-        'audio-samplerate':            (int,    'r'),
-        'audio-channels':              (str,    'r'),
-        'aid':                         (str,    'rw'),
-        'audio':                       (str,    'rw'), # alias for aid
-        'balance':                     (float,  'rw'),
-        'fullscreen':                  (ynbool, 'rw'),
-        'deinterlace':                 (str,    'rw'),
-        'colormatrix':                 (str,    'rw'),
-        'colormatrix-input-range':     (str,    'rw'),
-        'colormatrix-output-range':    (str,    'rw'),
-        'colormatrix-primaries':       (str,    'rw'),
-        'ontop':                       (ynbool, 'rw'),
-        'border':                      (ynbool, 'rw'),
-        'framedrop':                   (str,    'rw'),
-        'gamma':                       (float,  'rw'),
-        'brightness':                  (int,    'rw'),
-        'contrast':                    (int,    'rw'),
-        'saturation':                  (int,    'rw'),
-        'hue':                         (int,    'rw'),
-        'hwdec':                       (ynbool, 'rw'),
-        'panscan':                     (float,  'rw'),
-        'video-format':                (str,    'r'),
-        'video-codec':                 (str,    'r'),
-        'video-bitrate':               (float,  'r'),
-        'width':                       (int,    'r'),
-        'height':                      (int,    'r'),
-        'dwidth':                      (int,    'r'),
-        'dheight':                     (int,    'r'),
-        'fps':                         (float,  'r'),
-        'estimated-vf-fps':            (float,  'r'),
-        'window-scale':                (float,  'rw'),
-        'video-aspect':                (str,    'rw'),
-        'osd-width':                   (int,    'r'),
-        'osd-height':                  (int,    'r'),
-        'osd-par':                     (float,  'r'),
-        'vid':                         (str,    'rw'),
-        'video':                       (str,    'rw'), # alias for vid
-        'video-align-x':               (float,  'rw'),
-        'video-align-y':               (float,  'rw'),
-        'video-pan-x':                 (int,    'rw'),
-        'video-pan-y':                 (int,    'rw'),
-        'video-zoom':                  (float,  'rw'),
-        'video-unscaled':              (ynbool, 'w'),
-        'program':                     (int,    'w'),
-        'sid':                         (str,    'rw'),
-        'sub':                         (str,    'rw'), # alias for sid
-        'secondary-sid':               (str,    'rw'),
-        'sub-delay':                   (float,  'rw'),
-        'sub-pos':                     (int,    'rw'),
-        'sub-visibility':              (ynbool, 'rw'),
-        'sub-forced-only':             (ynbool, 'rw'),
-        'sub-scale':                   (float,  'rw'),
-        'ass-use-margins':             (ynbool, 'rw'),
-        'ass-vsfilter-aspect-compat':  (ynbool, 'rw'),
-        'ass-style-override':          (str,    'rw'),
-        'stream-capture':              (str,    'rw'),
-        'tv-brightness':               (int,    'rw'),
-        'tv-contrast':                 (int,    'rw'),
-        'tv-saturation':               (int,    'rw'),
-        'tv-hue':                      (int,    'rw'),
-        'playlist-pos':                (int,    'rw'),
-        'playlist-count':              (int,    'r'),
-        'quvi-format':                 (str,    'rw'),
-        'seekable':                    (ynbool, 'r')}   
+    'aid':                         (MpvFormat.STRING, 'rw'),
+    'angle':                       (MpvFormat.INT64,  'rw'),
+    'ass-style-override':          (MpvFormat.STRING, 'rw'),
+    'ass-use-margins':             (MpvFormat.FLAG,   'rw'),
+    'ass-vsfilter-aspect-compat':  (MpvFormat.FLAG,   'rw'),
+    'audio':                       (MpvFormat.STRING, 'rw'), # alias for aid
+    'audio-bitrate':               (MpvFormat.DOUBLE, 'r'),
+    'audio-channels':              (MpvFormat.STRING, 'r'),
+    'audio-codec':                 (MpvFormat.STRING, 'r'),
+    'audio-delay':                 (MpvFormat.DOUBLE, 'rw'),
+    'audio-format':                (MpvFormat.STRING, 'r'),
+    'audio-samplerate':            (MpvFormat.INT64,  'r'),
+    'avsync':                      (MpvFormat.DOUBLE, 'r'),
+    'balance':                     (MpvFormat.DOUBLE, 'rw'),
+    'border':                      (MpvFormat.FLAG,   'rw'),
+    'brightness':                  (MpvFormat.INT64,  'rw'),
+    'cache':                       (MpvFormat.INT64,  'r'),
+    'cache-size':                  (MpvFormat.INT64,  'rw'),
+    'chapter':                     (MpvFormat.INT64,  'rw'),
+    'chapters':                    (MpvFormat.INT64,  'r'),
+    'colormatrix':                 (MpvFormat.STRING, 'rw'),
+    'colormatrix-input-range':     (MpvFormat.STRING, 'rw'),
+    'colormatrix-output-range':    (MpvFormat.STRING, 'rw'),
+    'colormatrix-primaries':       (MpvFormat.STRING, 'rw'),
+    'contrast':                    (MpvFormat.INT64,  'rw'),
+    'core-idle':                   (MpvFormat.FLAG,   'r'),
+    'deinterlace':                 (MpvFormat.STRING, 'rw'),
+    'dheight':                     (MpvFormat.INT64,  'r'),
+    'disc-menu-active':            (MpvFormat.FLAG,   'r'),
+    'disc-title':                  (MpvFormat.STRING, 'rw'),
+    'disc-titles':                 (MpvFormat.INT64,  'r'),
+    'drop-frame-count':            (MpvFormat.INT64,  'r'),
+    'dwidth':                      (MpvFormat.INT64,  'r'),
+    'edition':                     (MpvFormat.INT64,  'rw'),
+    'editions':                    (MpvFormat.INT64,  'r'),
+    'eof-reached':                 (MpvFormat.FLAG,   'r'),
+    'estimated-vf-fps':            (MpvFormat.DOUBLE, 'r'),
+    'file-size':                   (MpvFormat.INT64,  'r'),
+    'filename':                    (MpvFormat.STRING, 'r'),
+    'fps':                         (MpvFormat.DOUBLE, 'r'),
+    'framedrop':                   (MpvFormat.STRING, 'rw'),
+    'fullscreen':                  (MpvFormat.FLAG,   'rw'),
+    'gamma':                       (MpvFormat.DOUBLE, 'rw'),
+    'height':                      (MpvFormat.INT64,  'r'),
+    'hr-seek':                     (MpvFormat.FLAG,   'rw'),
+    'hue':                         (MpvFormat.INT64,  'rw'),
+    'hwdec':                       (MpvFormat.FLAG,   'rw'),
+    'length':                      (MpvFormat.DOUBLE, 'r'),
+    'loop':                        (MpvFormat.STRING, 'rw'),
+    'loop-file':                   (MpvFormat.STRING, 'rw'),
+    'media-title':                 (MpvFormat.STRING, 'r'),
+    'mute':                        (MpvFormat.FLAG,   'rw'),
+    'ontop':                       (MpvFormat.FLAG,   'rw'),
+    'osd-height':                  (MpvFormat.INT64,  'r'),
+    'osd-level':                   (MpvFormat.INT64,  'rw'),
+    'osd-par':                     (MpvFormat.DOUBLE, 'r'),
+    'osd-scale':                   (MpvFormat.DOUBLE, 'rw'),
+    'osd-width':                   (MpvFormat.INT64,   'r'),
+    'panscan':                     (MpvFormat.DOUBLE, 'rw'),
+    'path':                        (MpvFormat.STRING, 'r'),
+    'pause':                       (MpvFormat.FLAG,   'rw'),
+    'pause-for-cache':             (MpvFormat.FLAG,   'r'),
+    'percent-pos':                 (MpvFormat.DOUBLE, 'rw'),
+    'playlist-count':              (MpvFormat.INT64,  'r'),
+    'playlist-pos':                (MpvFormat.INT64,  'rw'),
+    'playtime-remaining':          (MpvFormat.DOUBLE, 'r'),
+    'program':                     (MpvFormat.INT64,  'w'),
+    'pts-association-mode':        (MpvFormat.STRING, 'rw'),
+    'quvi-format':                 (MpvFormat.STRING, 'rw'),
+    'ratio-pos':                   (MpvFormat.DOUBLE, 'rw'),
+    'saturation':                  (MpvFormat.INT64,  'rw'),
+    'secondary-sid':               (MpvFormat.STRING, 'rw'),
+    'seekable':                    (MpvFormat.FLAG,   'r'),
+    'sid':                         (MpvFormat.STRING, 'rw'),
+    'speed':                       (MpvFormat.DOUBLE, 'rw'),
+    'stream-capture':              (MpvFormat.STRING, 'rw'),
+    'stream-end':                  (MpvFormat.INT64,  'r'),
+    'stream-pos':                  (MpvFormat.INT64,  'rw'),
+    'sub':                         (MpvFormat.STRING, 'rw'), # alias for sid
+    'sub-delay':                   (MpvFormat.DOUBLE, 'rw'),
+    'sub-forced-only':             (MpvFormat.FLAG,   'rw'),
+    'sub-pos':                     (MpvFormat.INT64,  'rw'),
+    'sub-scale':                   (MpvFormat.DOUBLE, 'rw'),
+    'sub-visibility':              (MpvFormat.FLAG,   'rw'),
+    'time-pos':                    (MpvFormat.DOUBLE, 'rw'),
+    'time-remaining':              (MpvFormat.DOUBLE, 'r'),
+    'time-start':                  (MpvFormat.DOUBLE, 'r'),
+    'total-avsync-change':         (MpvFormat.DOUBLE, 'r'),
+    'tv-brightness':               (MpvFormat.INT64,  'rw'),
+    'tv-contrast':                 (MpvFormat.INT64,  'rw'),
+    'tv-hue':                      (MpvFormat.INT64,  'rw'),
+    'tv-saturation':               (MpvFormat.INT64,  'rw'),
+    'vid':                         (MpvFormat.STRING, 'rw'),
+    'video':                       (MpvFormat.STRING, 'rw'), # alias for vid
+    'video-align-x':               (MpvFormat.DOUBLE, 'rw'),
+    'video-align-y':               (MpvFormat.DOUBLE, 'rw'),
+    'video-aspect':                (MpvFormat.STRING, 'rw'),
+    'video-bitrate':               (MpvFormat.DOUBLE, 'r'),
+    'video-codec':                 (MpvFormat.STRING, 'r'),
+    'video-format':                (MpvFormat.STRING, 'r'),
+    'video-pan-x':                 (MpvFormat.INT64,  'rw'),
+    'video-pan-y':                 (MpvFormat.INT64,  'rw'),
+    'video-unscaled':              (MpvFormat.FLAG,   'w'),
+    'video-zoom':                  (MpvFormat.DOUBLE, 'rw'),
+    'volume':                      (MpvFormat.DOUBLE, 'rw'),
+    'width':                       (MpvFormat.INT64,  'r'),
+    'window-scale':                (MpvFormat.DOUBLE, 'rw'),
+    # Node Properties
+    'metadata':                    (MpvFormat.NODE,   'r'),
+    'chapter-metadata':            (MpvFormat.NODE,   'r'),
+    'vf-metadata':                 (MpvFormat.NODE,   'r'),
+    'af-metadata':                 (MpvFormat.NODE,   'r'),
+    'video-params':                (MpvFormat.NODE,   'r'),
+    'video-out-params':            (MpvFormat.NODE,   'r'),
+    'playlist':                    (MpvFormat.NODE,   'r'),
+    'track-list':                  (MpvFormat.NODE,   'r'),
+    'chapter-list':                (MpvFormat.NODE,   'r'),
+}
+
 
 def bindproperty(MPV, name, proptype, access):
+
     def getter(self):
-        cval = _mpv_get_property_string(self.handle, name.encode())
-        if cval is None:
-            return None
-        rv = proptype(cval.decode())
-#        _mpv_free(cval) FIXME
-        return rv
+        cval = self._get_property(name, proptype)
+        return cval
+
     def setter(self, value):
-        _mpv_set_property_string(self.handle, name.encode(), str(proptype(value)).encode())
+        self._set_property(name, proptype, value)
+
     def barf(*args):
         raise NotImplementedError('Access denied')
+
     setattr(MPV, name.replace('-', '_'), property(getter if 'r' in access else barf, setter if 'w' in access else barf))
+
 
 for name, (proptype, access) in ALL_PROPERTIES.items():
     bindproperty(MPV, name, proptype, access)
-
