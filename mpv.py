@@ -30,20 +30,20 @@ class ErrorCode:
     COMMAND                 = -12
 
     EXCEPTION_DICT = {
-             0:     None,
-            -1:     lambda *a: MemoryError('mpv event queue full', *a),
-            -2:     lambda *a: MemoryError('mpv cannot allocate memory', *a),
-            -3:     lambda *a: ValueError('Uninitialized mpv handle used', *a),
-            -4:     lambda *a: ValueError('Invalid value for mpv parameter', *a),
-            -5:     lambda *a: AttributeError('mpv option does not exist', *a),
-            -6:     lambda *a: TypeError('Tried to set mpv option using wrong format', *a),
-            -7:     lambda *a: ValueError('Invalid value for mpv option', *a),
-            -8:     lambda *a: AttributeError('mpv property does not exist', *a),
-            -9:     lambda *a: TypeError('Tried to set mpv property using wrong format', *a),
-            -10:    lambda *a: AttributeError('mpv property is not available', *a),
-            -11:    lambda *a: ValueError('Invalid value for mpv property', *a),
-            -12:    lambda *a: SystemError('Error running mpv command', *a)
-        }
+         0:     None,
+        -1:     lambda *a: MemoryError('mpv event queue full', *a),
+        -2:     lambda *a: MemoryError('mpv cannot allocate memory', *a),
+        -3:     lambda *a: ValueError('Uninitialized mpv handle used', *a),
+        -4:     lambda *a: ValueError('Invalid value for mpv parameter', *a),
+        -5:     lambda *a: AttributeError('mpv option does not exist', *a),
+        -6:     lambda *a: TypeError('Tried to set mpv option using wrong format', *a),
+        -7:     lambda *a: ValueError('Invalid value for mpv option', *a),
+        -8:     lambda *a: AttributeError('mpv property does not exist', *a),
+        -9:     lambda *a: TypeError('Tried to set mpv property using wrong format', *a),
+        -10:    lambda *a: AttributeError('mpv property is not available', *a),
+        -11:    lambda *a: ValueError('Invalid value for mpv property', *a),
+        -12:    lambda *a: SystemError('Error running mpv command', *a)
+    }
 
     @classmethod
     def DEFAULT_ERROR_HANDLER(ec, *args):
@@ -79,7 +79,6 @@ class MpvFormat(c_int):
                 MpvNodeList, MpvNodeList, MpvByteArray][value]
 
 
-
 class MpvEventID(c_int):
     NONE                    = 0
     SHUTDOWN                = 1
@@ -106,10 +105,16 @@ class MpvEventID(c_int):
     PROPERTY_CHANGE         = 22
     CHAPTER_CHANGE          = 23
 
-    ANY = ( SHUTDOWN, LOG_MESSAGE, GET_PROPERTY_REPLY, SET_PROPERTY_REPLY, COMMAND_REPLY, START_FILE, END_FILE,
-            FILE_LOADED, TRACKS_CHANGED, TRACK_SWITCHED, IDLE, PAUSE, UNPAUSE, TICK, SCRIPT_INPUT_DISPATCH,
-            CLIENT_MESSAGE, VIDEO_RECONFIG, AUDIO_RECONFIG, METADATA_UPDATE, SEEK, PLAYBACK_RESTART, PROPERTY_CHANGE,
-            CHAPTER_CHANGE )
+    ANY = (SHUTDOWN, LOG_MESSAGE, GET_PROPERTY_REPLY, SET_PROPERTY_REPLY, COMMAND_REPLY, START_FILE, END_FILE,
+           FILE_LOADED, TRACKS_CHANGED, TRACK_SWITCHED, IDLE, PAUSE, UNPAUSE, TICK, SCRIPT_INPUT_DISPATCH,
+           CLIENT_MESSAGE, VIDEO_RECONFIG, AUDIO_RECONFIG, METADATA_UPDATE, SEEK, PLAYBACK_RESTART, PROPERTY_CHANGE,
+           CHAPTER_CHANGE)
+
+    @staticmethod
+    def ctype(value):
+        return [None, None, MpvEventLogMessage, None, None, None, None, MpvEventEndFile,
+                None, None, None, None, None, None, None, MpvEventScriptInputDispatch,
+                MpvEventClientMessage, None, None, None, None, None, MpvEventProperty, None][value]
 
 
 class MpvEvent(Structure):
@@ -119,13 +124,7 @@ class MpvEvent(Structure):
                 ('data', c_void_p)]
 
     def as_dict(self):
-        dtype = {MpvEventID.END_FILE:               MpvEventEndFile,
-                MpvEventID.PROPERTY_CHANGE:         MpvEventProperty,
-                MpvEventID.GET_PROPERTY_REPLY:      MpvEventProperty,
-                MpvEventID.LOG_MESSAGE:             MpvEventLogMessage,
-                MpvEventID.SCRIPT_INPUT_DISPATCH:   MpvEventScriptInputDispatch,
-                MpvEventID.CLIENT_MESSAGE:          MpvEventClientMessage
-            }.get(self.event_id.value, None)
+        dtype = MpvEventID.ctype(self.event_id.value)
         return {'event_id': self.event_id.value,
                 'error': self.error,
                 'reply_userdata': self.reply_userdata,
@@ -277,7 +276,7 @@ _mpv_free = backend.mpv_free
 backend.mpv_create.restype = MpvHandle
 _mpv_create = backend.mpv_create
 
-backend.mpv_free_node_contents.argtypes = [MpvNode]
+backend.mpv_free_node_contents.argtypes = [POINTER(MpvNode)]
 _mpv_free_node_contents = backend.mpv_free_node_contents
 
 _handle_func('mpv_create_client', [c_char_p], MpvHandle)
@@ -320,23 +319,12 @@ _handle_func('mpv_request_event', [MpvEventID, c_int])
 _handle_func('mpv_request_log_messages', [c_char_p])
 _handle_func('mpv_wait_event', [c_double], POINTER(MpvEvent))
 _handle_func('mpv_wakeup', [], c_int)
-_handle_func('mpv_set_wakeup_callback', [WakeupCallback, c_void_p], c_int)
+_handle_func('mpv_set_wakeup_callback', [WakeupCallback, c_void_p])
 _handle_func('mpv_get_wakeup_pipe', [], c_int)
 
 
 def _ensure_encoding(possibly_bytes):
     return possibly_bytes.decode() if type(possibly_bytes) is bytes else possibly_bytes
-
-
-def _event_generator(handle):
-    while True:
-        try:
-            event = _mpv_wait_event(handle, -1).contents
-        except OSError as e:
-            raise StopIteration(str(e))
-        if event.event_id.value == MpvEventID.NONE:
-            raise StopIteration()
-        yield event
 
 
 def load_lua():
@@ -365,9 +353,13 @@ class MPV:
                 pass
         _mpv_initialize(self.handle)
 
-    def __del__(self):
-        if self.handle:
-            self.terminate()
+    def set_wakeup_callback(self, func, d=None):
+        self.wakeup = WakeupCallback(func) if func is not None else cast(None, WakeupCallback)
+        self.wakeup_data = cast(None, c_void_p)
+        _mpv_set_wakeup_callback(self.handle, self.wakeup, self.wakeup_data)
+
+    def wait_event(self, timeout=0):
+        return _mpv_wait_event(self.handle, float(timeout)).contents
 
     def terminate_destroy(self):
         self.handle, handle = None, self.handle
@@ -395,7 +387,7 @@ class MPV:
         _mpv_command_node(self.handle, cast(addressof(nb.node), POINTER(MpvNode)),
                           cast(addressof(res), POINTER(MpvNode)))
         data = res.get_value()
-        _mpv_free_node_contents(res)
+        _mpv_free_node_contents(cast(addressof(res), POINTER(MpvNode)))
         return data
 
     def seek(self, amount, reference="relative", precision="default-precise"):
@@ -521,7 +513,7 @@ class MPV:
             return float(res.value)
         elif mpv_format == MpvFormat.NODE:
             data = res.get_value()
-            _mpv_free_node_contents(res)
+            _mpv_free_node_contents(cast(addressof(res), POINTER(MpvNode)))
             return data
 
     def _set_property(self, prop, mpv_format, value):
