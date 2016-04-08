@@ -3,3 +3,5 @@ mpv.egg-info
 __pycache__
 *.swo
 *.swp
+*.py[cod]
+*$py.class

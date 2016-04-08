@@ -1,0 +1,2 @@
+class MpvError(BaseException):
+    pass

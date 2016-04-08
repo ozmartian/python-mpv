@@ -2,124 +2,27 @@ import sys
 import os
 import logging
 from PyQt5.QtWidgets import (QWidget, QMainWindow, QAction, QMenu, QApplication,
-                             QHBoxLayout, QSlider, QFileDialog)
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QObject, QPoint, QThread
+                             QHBoxLayout, QSlider, QFileDialog, QLabel)
+from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QPoint
 import mpv
 
 logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+                    format='%(asctime)s %(name)-10s %(levelname)-8s %(message)s')
+mpv_log = logging.getLogger('libmpv')
 
 
-class EventThread(QThread):
-    mpv_event = pyqtSignal(dict)
-
-    def __init__(self, mpv_instance, parent=None):
-        super().__init__(parent)
-        self.mpv = mpv_instance
-
-    def run(self):
-        logging.debug('Event loop: starting.')
-        while True:
-            try:
-                event = self.mpv.wait_event(timeout=-1)
-                devent = event.as_dict()
-            except Exception as e:
-                logging.debug('Event loop: ' + str(e))
-                break
-            if devent['event_id'] == mpv.MpvEventID.NONE:
-                logging.debug('Event loop: None event.')
-                break
-            elif devent['event_id'] == mpv.MpvEventID.SHUTDOWN:
-                logging.debug('Event loop: Shutdown event.')
-                self.mpv.set_wakeup_callback(None)
-                self.mpv.detach_destroy()
-                self.mpv = None
-                break
-            self.mpv_event.emit(devent)
-
-
-class QMpv(QObject):
-    wakeup = pyqtSignal()
-    new_duration = pyqtSignal(int)
-    playback_time = pyqtSignal(int)
-
-    def __init__(self, wid, parent=None):
-        super().__init__(parent)
-        self.mpv = mpv.MPV(wid=wid)
-        self.mpv.observe_property('track-list', mpv.MpvFormat.NODE)
-        self.mpv.observe_property('playback-time', mpv.MpvFormat.DOUBLE)
-        self.mpv.observe_property('duration', mpv.MpvFormat.DOUBLE)
-
-        self.event_loop = EventThread(self.mpv)
-        self.wakeup.connect(self.event_loop.start)
-        self.event_loop.mpv_event.connect(self.handle_event)
-        self.wakeup.emit()
-
-    def quit(self):
-        logging.debug('quit')
-        self.mpv.quit()
-        self.event_loop.wait()
-        self.mpv = None
-
-    def handle_event(self, event):
-        handler = {
-            mpv.MpvEventID.IDLE: self.on_idle,
-            mpv.MpvEventID.START_FILE: self.on_start_file,
-            mpv.MpvEventID.END_FILE: self.on_end_file,
-            mpv.MpvEventID.PAUSE: self.on_pause,
-            mpv.MpvEventID.PROPERTY_CHANGE: self.on_property_change,
-            mpv.MpvEventID.LOG_MESSAGE: self.on_log_message,
-            mpv.MpvEventID.FILE_LOADED: self.on_file_loaded,
-            mpv.MpvEventID.TRACKS_CHANGED: self.on_tracks_changed,
-            mpv.MpvEventID.METADATA_UPDATE: self.on_metadata_update
-        }.get(event['event_id'], None)
-        if handler is not None:
-            handler(event['event'])
-
-    def on_idle(self, event):
-        pass
-
-    def on_start_file(self, event):
-        pass
-
-    def on_end_file(self, event):
-        pass
-
-    def on_pause(self, event):
-        pass
+class Mpv(mpv.QMpv):
+    duration = pyqtSignal(float)
+    playback_time = pyqtSignal(float)
 
     def on_property_change(self, event):
         if event['data'] is None:
             return
+
         if event['name'] == 'playback-time':
-            self.playback_time.emit(int(event['data'] * 1000))
-        if event['name'] == 'duration':
-            logging.debug(event)
-            self.new_duration.emit(int(event['data'] * 1000))
-
-    def on_log_message(self, event):
-        pass
-
-    def on_file_loaded(self, event):
-        pass
-
-    def on_tracks_changed(self, event):
-        pass
-
-    def on_metadata_update(self, event):
-        pass
-
-    @pyqtSlot(str)
-    def play(self, path):
-        self.mpv.play(path)
-
-    @pyqtSlot(int)
-    def seek_to(self, ms):
-        self.mpv.command_node('seek', ms / 1000.0, 'absolute+exact')
-
-    @pyqtSlot(int)
-    def skip(self, ms):
-        self.mpv.command_node('seek', ms / 1000.0, 'relative+exact')
+            self.playback_time.emit(event['data'])
+        elif event['name'] == 'duration':
+            self.duration.emit(event['data'])
 
 
 class PlayerControls(QWidget):
@@ -127,14 +30,35 @@ class PlayerControls(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        self.seek_bar = QSlider(orientation=Qt.Horizontal, parent=self)
-        layout.addWidget(self.seek_bar)
+
+        self.seek_slider = QSlider(orientation=Qt.Horizontal, parent=self)
+        self.volume_slider = QSlider(orientation=Qt.Horizontal, maximum=1000, parent=self)
+        self.playback_time = QLabel(parent=self)
+        self.duration = QLabel(parent=self)
+
+        layout.addWidget(self.seek_slider)
+        layout.addWidget(self.volume_slider)
+        layout.addWidget(self.playback_time)
+        layout.addWidget(self.duration)
+
         self.setLayout(layout)
 
-    @pyqtSlot(int)
-    def seek_bar_position(self, val):
-        if not self.seek_bar.isSliderDown():
-            self.seek_bar.setSliderPosition(val)
+    @pyqtSlot(float)
+    def update_seek_slider_position(self, val):
+        if not self.seek_slider.isSliderDown():
+            self.seek_slider.setSliderPosition(val * 1000)
+
+    @pyqtSlot(float)
+    def update_seek_slider_maximum(self, val):
+        self.seek_slider.setMaximum(val * 1000)
+
+    @pyqtSlot(float)
+    def update_duration(self, val):
+        self.duration.setText('{:.2f}'.format(val))
+
+    @pyqtSlot(float)
+    def update_playback_time(self, val):
+        self.playback_time.setText('{:.2f}'.format(val))
 
 
 class Player(QMainWindow):
@@ -152,26 +76,40 @@ class Player(QMainWindow):
         self.mpv_container.setAttribute(Qt.WA_NativeWindow)
         wid = int(self.mpv_container.winId())
 
-        self.mpv = QMpv(wid)
+        self.mpv = Mpv(self)
+
+        self.mpv.initialize(wid=wid,
+                            log_handler=mpv_log.debug,
+                            log_level=mpv.MpvLogLevel.INFO,
+                            input_cursor=False,
+                            hwdec='auto',
+                            observe=['track-list', 'playback-time', 'duration'])
 
         self.controller = PlayerControls()
         self.controller.show()
 
-        self.mpv.new_duration.connect(self.controller.seek_bar.setMaximum)
-        self.mpv.playback_time.connect(self.controller.seek_bar_position)
+        self.mpv.duration.connect(self.controller.update_seek_slider_maximum)
+        self.mpv.duration.connect(self.controller.update_duration)
+        self.mpv.playback_time.connect(self.controller.update_seek_slider_position)
+        self.mpv.playback_time.connect(self.controller.update_playback_time)
 
-        self.controller.seek_bar.sliderReleased.connect(self.slider_seek)
+        self.controller.seek_slider.sliderReleased.connect(self.slider_seek)
+        self.controller.volume_slider.valueChanged.connect(self.slider_volume)
 
     @pyqtSlot()
     def on_file_open(self):
-        save_file, filtr = QFileDialog.getOpenFileName(self, 'Open File')
-        logging.debug(save_file)
-        if save_file:
-            self.mpv.play(os.path.abspath(save_file))
+        open_file, filtr = QFileDialog.getOpenFileName(self, 'Open File')
+        logging.debug('Opening file: {}'.format(open_file))
+        if open_file:
+            self.mpv.play(os.path.abspath(open_file))
 
     @pyqtSlot()
     def slider_seek(self):
-        self.mpv.seek_to(self.controller.seek_bar.value())
+        self.mpv.seek_absolute(self.controller.seek_slider.value())
+
+    @pyqtSlot(int)
+    def slider_volume(self, val):
+        self.mpv.set_volume(val / 10.0)
 
     def closeEvent(self, event):
         self.controller.close()
@@ -179,7 +117,7 @@ class Player(QMainWindow):
 
 
 if __name__ == '__main__':
-    os.environ['LC_NUMERIC'] = 'C'
+    mpv.load_library()
     app = QApplication(sys.argv)
     window = Player()
     window.show()
