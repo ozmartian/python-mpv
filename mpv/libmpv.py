@@ -8,7 +8,8 @@ from mpv.types import (MpvHandle, ErrorCode, MpvFormat, MpvLogLevel,
                        MpvNodeList, MpvByteArray, MpvEventLogMessage,
                        MpvEndFileReason, MpvEventEndFile,
                        MpvEventScriptInputDispatch, MpvEventClientMessage,
-                       WakeupCallback, NodeBuilder)
+                       WakeupCallback, NodeBuilder,
+                       MpvOpenGLCbContext, MpvSubApi, OpenGlCbUpdateFn, OpenGlCbGetProcAddrFn)
 log = logging.getLogger(__name__)
 
 
@@ -69,11 +70,11 @@ class LibMPV(object):
         self.backend.mpv_error_string.argtypes = [c_int]
         self.mpv_error_string = self.backend.mpv_error_string
 
-        def _handle_func(name, args=[], res=None):
+        def _handle_func(name, args=[], res=None, ctx=[MpvHandle]):
             func = getattr(self.backend, name)
             if res is not None:
                 func.restype = res
-            func.argtypes = [MpvHandle] + args
+            func.argtypes = ctx + args
 
             def wrapper(*args):
                 if res is ErrorCode:
@@ -117,6 +118,31 @@ class LibMPV(object):
         _handle_func('mpv_wakeup', [], c_int)
         _handle_func('mpv_set_wakeup_callback', [WakeupCallback, c_void_p])
         _handle_func('mpv_get_wakeup_pipe', [], c_int)
+        _handle_func('mpv_get_sub_api', [MpvSubApi], c_void_p)
+
+        def _handle_func_cb(name, args=[], res=None):
+            return _handle_func(name, args, res, [MpvOpenGLCbContext])
+
+        _handle_func_cb('mpv_opengl_cb_set_update_callback', [OpenGlCbUpdateFn, c_void_p])
+        _handle_func_cb('mpv_opengl_cb_init_gl', [c_char_p, OpenGlCbGetProcAddrFn, c_void_p], ErrorCode)
+        _handle_func_cb('mpv_opengl_cb_draw', [c_int, c_int, c_int], c_int)
+        _handle_func_cb('mpv_opengl_cb_render', [c_int, c_int], c_int)  # deprecated
+        _handle_func_cb('mpv_opengl_cb_report_flip', [c_ulonglong], ErrorCode)
+        _handle_func_cb('mpv_opengl_cb_uninit_gl', [], ErrorCode)
+
+    def get_sub_api(self, ctx, sub_api):
+        if sub_api == MpvSubApi.MPV_SUB_API_OPENGL_CB:
+            return cast(self.mpv_get_sub_api(ctx, sub_api), POINTER(MpvOpenGLCbContext))
+
+    def opengl_cb_set_update_callback(self, ctx, callback, callback_ctx):
+        self._opengl_update_cb = OpenGlCbUpdateFn(callback)
+        self._opengl_cb_ctx = cast(None, c_void_p)
+        LIBMPV.mpv_opengl_cb_set_update_callback(ctx, self._opengl_update_cb, self._opengl_cb_ctx)
+
+    def opengl_cb_init_gl(self, ctx, exts, get_proc_address, get_proc_address_ctx):
+        self._opengl_proc_address_fn = OpenGlCbGetProcAddrFn(get_proc_address)
+        self._opengl_proc_address_ctx = cast(None, c_void_p)
+        LIBMPV.mpv_opengl_cb_init_gl(ctx, cast(None, c_char_p), self._opengl_proc_address_fn, self._opengl_proc_address_ctx)
 
     def set_wakeup_callback(self, ctx, func, d):
         self.wakeup = WakeupCallback(func) if func is not None else cast(None, WakeupCallback)

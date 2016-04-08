@@ -10,6 +10,14 @@ class MpvHandle(c_void_p):
     pass
 
 
+class MpvOpenGLCbContext(c_void_p):
+    pass
+
+
+class MpvSubApi(c_int):
+    MPV_SUB_API_OPENGL_CB = 1
+
+
 class ErrorCode(c_int):
     """ For documentation on these, see mpv's libmpv/client.h """
     SUCCESS                 = 0
@@ -271,6 +279,8 @@ class MpvEventClientMessage(Structure):
 
 
 WakeupCallback = CFUNCTYPE(None, c_void_p)
+OpenGlCbUpdateFn = CFUNCTYPE(None, c_void_p)
+OpenGlCbGetProcAddrFn = CFUNCTYPE(c_void_p, c_void_p, c_char_p)
 
 
 class NodeBuilder(object):

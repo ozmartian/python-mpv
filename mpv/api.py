@@ -1,6 +1,6 @@
 import platform
 import logging
-from mpv.types import NodeBuilder, MpvFormat, MpvNode, MpvLogLevel
+from mpv.types import NodeBuilder, MpvFormat, MpvNode, MpvLogLevel, MpvSubApi
 from mpv.exceptions import MpvError
 from mpv.properties import PROPERTIES
 from mpv.libmpv import LIBMPV
@@ -31,6 +31,7 @@ class MPV(object):
     def __init__(self, **kwargs):
         """ Create an MPV instance. Any kwargs given will be passed to mpv as options. """
         self.handle = LIBMPV.mpv_create()
+        self.opengl = None
         log.debug('libmpv API Version: {}.{}'.format(*api_version()))
         for k, v in kwargs.items():
             try:
@@ -73,6 +74,18 @@ class MPV(object):
 
     def command_node(self, *args):
         return LIBMPV.command_node(self.handle, *args)
+
+    def get_opengl_api(self):
+        """ load the opengl sub api """
+        self.opengl = LIBMPV.get_sub_api(self.handle, MpvSubApi.MPV_SUB_API_OPENGL_CB)
+
+    def opengl_set_update_callback(self, callback, ctx=None):
+        if self.opengl is not None:
+            LIBMPV.opengl_cb_set_update_callback(self.opengl, callback, ctx)
+
+    def opengl_init_gl(self, get_proc_address, exts=None, ctx=None):
+        if self.opengl is not None:
+            LIBMPV.opengl_cb_init_gl(self.opengl, exts, get_proc_address, ctx)
 
     # Shortcuts
     def seek(self, amount, reference='relative', precision='default-precise'):

@@ -1,6 +1,7 @@
 import logging
 from mpv.api import MPV
 from PyQt5.QtCore import QThread, QObject, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QOpenGLContext
 from mpv.types import MpvLogLevel, MpvEventID
 from mpv.exceptions import MpvError
 log = logging.getLogger(__name__)
@@ -51,6 +52,18 @@ class QMpv(QObject):
         self.wakeup.connect(self.event_loop.start)
         self.event_loop.mpv_event.connect(self.handle_event)
         self.wakeup.emit()
+
+    def init_gl(self):
+        raise NotImplementedError
+        self.mpv.get_opengl_api()
+        self.mpv.opengl_set_update_callback(self.opengl_update_callback)
+        self.mpv.opengl_init_gl(self.opengl_get_proc_address)
+
+    def opengl_update_callback(self, ctx):
+        log.debug('opengl_update_callback')
+
+    def opengl_get_proc_address(self, ctx, name):
+        log.debug('opengl_proc_address: {}, {}'.format(ctx, name))
 
     def quit(self):
         log.debug('quit')
