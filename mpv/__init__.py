@@ -2,12 +2,13 @@ __title__ = 'mpv'
 __version__ = '0.2'
 
 from .api import MPV, api_version, load_library, load_lua
-from .types import MpvLogLevel, MpvEventID
+from .types import MpvLogLevel, MpvEventID, MpvFormat, ErrorCode
 from .exceptions import MpvError
 from .properties import PROPERTIES
+from .template import MpvTemplate
 
 try:
-    from .pyqt import QMpv
+    from .templateqt import MpvTemplatePyQt
 except (ImportError, NameError):
     pass
 

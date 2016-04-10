@@ -1,18 +1,17 @@
 import logging
+import threading
 from mpv.api import MPV
-from PyQt5.QtCore import QThread, QObject, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QOpenGLContext
 from mpv.types import MpvLogLevel, MpvEventID
 from mpv.exceptions import MpvError
 log = logging.getLogger(__name__)
 
 
-class EventThread(QThread):
-    mpv_event = pyqtSignal(dict)
+class _EventThread(threading.Thread):
 
-    def __init__(self, mpv_instance, parent=None):
-        super().__init__(parent)
+    def __init__(self, mpv_instance, event_callback):
+        super().__init__(name='MPVEventHandlerThread')
         self.mpv = mpv_instance
+        self.callback = event_callback
 
     def run(self):
         log.debug('Event loop: starting.')
@@ -25,17 +24,21 @@ class EventThread(QThread):
                 break
             if devent['event_id'] == MpvEventID.NONE:
                 log.debug('Event loop: None event.')
+                self.callback(devent)
                 break
             elif devent['event_id'] == MpvEventID.SHUTDOWN:
                 log.debug('Event loop: Shutdown event.')
                 self.mpv.detach_destroy()
                 self.mpv = None
+                self.callback(devent)
                 break
-            self.mpv_event.emit(devent)
+            self.callback(devent)
 
 
-class QMpv(QObject):
-    wakeup = pyqtSignal()
+class MpvTemplate(object):
+
+    def __init__(self):
+        self.mpv = None
 
     def initialize(self, observe=None, log_level=MpvLogLevel.INFO, log_handler=None, **kwargs):
         self.mpv = MPV(**kwargs)
@@ -48,32 +51,18 @@ class QMpv(QObject):
             self.mpv.request_log_messages(log_level)
             self.log_handler = log_handler
 
-        self.event_loop = EventThread(self.mpv)
-        self.wakeup.connect(self.event_loop.start)
-        self.event_loop.mpv_event.connect(self.handle_event)
-        self.wakeup.emit()
+        self._event_loop = _EventThread(self.mpv, self._handle_event)
+        self._event_loop.start()
 
-    def init_gl(self):
-        raise NotImplementedError
-        self.mpv.get_opengl_api()
-        self.mpv.opengl_set_update_callback(self.opengl_update_callback)
-        self.mpv.opengl_init_gl(self.opengl_get_proc_address)
-
-    def opengl_update_callback(self, ctx):
-        log.debug('opengl_update_callback')
-
-    def opengl_get_proc_address(self, ctx, name):
-        log.debug('opengl_proc_address: {}, {}'.format(ctx, name))
+    def _handle_event(self, event):
+        handler = getattr(self, 'on_{}'.format(MpvEventID.name(event['event_id']).lower()))
+        handler(event['event'])
 
     def quit(self):
         log.debug('quit')
         self.mpv.quit()  # trigger a SHUTDOWN event.
-        self.event_loop.wait()  # block until mpv dies.
+        self._event_loop.join()  # block until mpv dies.
         self.mpv = None
-
-    def handle_event(self, event):
-        handler = getattr(self, 'on_{}'.format(MpvEventID.name(event['event_id']).lower()))
-        handler(event['event'])
 
     def on_none(self, event):
         pass
@@ -157,24 +146,3 @@ class QMpv(QObject):
 
     def on_queue_overflow(self, event):
         pass
-
-    @pyqtSlot(str)
-    def play(self, path):
-        self.mpv.play(path)
-
-    @pyqtSlot(int)
-    def seek_absolute(self, ms):
-        try:
-            self.mpv.seek(ms / 1000.0, 'absolute+exact')
-        except MpvError as e:
-            log.debug(e)
-            pass
-
-    @pyqtSlot(int)
-    def seek_relative(self, ms):
-        self.mpv.seek(ms / 1000.0, 'relative+exact')
-
-    @pyqtSlot(int)
-    def set_volume(self, val):
-        """ :param val: volume percentage as a float. [0.0, 100.0] """
-        self.mpv.volume = val

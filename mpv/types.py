@@ -41,14 +41,6 @@ class ErrorCode(c_int):
     UNSUPPORTED             = -18
     NOT_IMPLEMENTED         = -19
 
-    def exception(self, func, *args):
-        err = b''
-        return MpvError(func.__name__, self.value, [(x.decode() if type(x)
-                                                     is bytes else x) for x in args])
-
-    def error_string(self):
-        return ''
-
 
 class MpvFormat(c_int):
     NONE        = 0
@@ -167,7 +159,7 @@ class MpvEventProperty(Structure):
         else:
             data = dpointer.contents.value
         return {'name': self.name.decode(),
-                'format': self.format,
+                #'format': self.format.value,
                 'data': data}
 
 
@@ -280,7 +272,7 @@ class MpvEventClientMessage(Structure):
 
 WakeupCallback = CFUNCTYPE(None, c_void_p)
 OpenGlCbUpdateFn = CFUNCTYPE(None, c_void_p)
-OpenGlCbGetProcAddrFn = CFUNCTYPE(c_void_p, c_void_p, c_char_p)
+OpenGlCbGetProcAddrFn = CFUNCTYPE(c_int, c_void_p, c_char_p)
 
 
 class NodeBuilder(object):

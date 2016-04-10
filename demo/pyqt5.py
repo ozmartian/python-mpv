@@ -7,11 +7,11 @@ from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QPoint
 import mpv
 
 logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s %(name)-10s %(levelname)-8s %(message)s')
+                    format='%(asctime)s %(name)-15s %(levelname)-8s %(message)s')
 mpv_log = logging.getLogger('libmpv')
 
 
-class Mpv(mpv.QMpv):
+class Mpv(mpv.MpvTemplatePyQt):
     duration = pyqtSignal(float)
     playback_time = pyqtSignal(float)
 
@@ -71,6 +71,7 @@ class Player(QMainWindow):
         menu.addAction(on_open)
 
         self.mpv_container = QWidget(self)
+
         self.setCentralWidget(self.mpv_container)
         self.mpv_container.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self.mpv_container.setAttribute(Qt.WA_NativeWindow)

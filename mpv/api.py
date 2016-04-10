@@ -58,7 +58,7 @@ class MPV(object):
 
     def observe_property(self, name, mpv_format=None, reply_userdata=None):
         if name not in PROPERTIES:
-            raise MpvError('Property "{}" not available.'.format(name))
+            raise AttributeError('Property "{}" not available.'.format(name))
         if mpv_format is None:
             mpv_format = PROPERTIES[name][0]
         if reply_userdata is None:
@@ -80,12 +80,13 @@ class MPV(object):
         self.opengl = LIBMPV.get_sub_api(self.handle, MpvSubApi.MPV_SUB_API_OPENGL_CB)
 
     def opengl_set_update_callback(self, callback, ctx=None):
-        if self.opengl is not None:
-            LIBMPV.opengl_cb_set_update_callback(self.opengl, callback, ctx)
+        LIBMPV.opengl_cb_set_update_callback(self.opengl, callback, ctx)
 
     def opengl_init_gl(self, get_proc_address, exts=None, ctx=None):
-        if self.opengl is not None:
-            LIBMPV.opengl_cb_init_gl(self.opengl, exts, get_proc_address, ctx)
+        LIBMPV.opengl_cb_init_gl(self.opengl, exts, get_proc_address, ctx)
+
+    def opengl_draw(self, fbo, w, h):
+        LIBMPV.mpv_opengl_cb_draw(self.opengl, fbo, w, h)
 
     # Shortcuts
     def seek(self, amount, reference='relative', precision='default-precise'):

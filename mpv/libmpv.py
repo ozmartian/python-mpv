@@ -10,6 +10,7 @@ from mpv.types import (MpvHandle, ErrorCode, MpvFormat, MpvLogLevel,
                        MpvEventScriptInputDispatch, MpvEventClientMessage,
                        WakeupCallback, NodeBuilder,
                        MpvOpenGLCbContext, MpvSubApi, OpenGlCbUpdateFn, OpenGlCbGetProcAddrFn)
+from mpv.exceptions import MpvError
 log = logging.getLogger(__name__)
 
 
@@ -77,14 +78,22 @@ class LibMPV(object):
             func.argtypes = ctx + args
 
             def wrapper(*args):
-                if res is ErrorCode:
-                    result = func(*args)
-                    if result.value < 0:
-                        raise result.exception(func, *args)
+                try:
+                    if res is ErrorCode:
+                        result = func(*args)
+                        if result.value < 0:
+                            try:
+                                reason = self.mpv_error_string(result.value).decode()
+                            except Exception:
+                                reason = 'N/A'
+                            raise MpvError(func.__name__, result.value, reason,
+                                           [(x.decode() if type(x) is bytes else x) for x in args])
+                        else:
+                            return result
                     else:
-                        return result
-                else:
-                    return func(*args)
+                            return func(*args)
+                except OSError:
+                    pass
             setattr(self, name, wrapper)
 
         _handle_func('mpv_create_client', [c_char_p], MpvHandle)
@@ -137,17 +146,17 @@ class LibMPV(object):
     def opengl_cb_set_update_callback(self, ctx, callback, callback_ctx):
         self._opengl_update_cb = OpenGlCbUpdateFn(callback)
         self._opengl_cb_ctx = cast(None, c_void_p)
-        LIBMPV.mpv_opengl_cb_set_update_callback(ctx, self._opengl_update_cb, self._opengl_cb_ctx)
+        self.mpv_opengl_cb_set_update_callback(ctx, self._opengl_update_cb, self._opengl_cb_ctx)
 
     def opengl_cb_init_gl(self, ctx, exts, get_proc_address, get_proc_address_ctx):
         self._opengl_proc_address_fn = OpenGlCbGetProcAddrFn(get_proc_address)
         self._opengl_proc_address_ctx = cast(None, c_void_p)
-        LIBMPV.mpv_opengl_cb_init_gl(ctx, cast(None, c_char_p), self._opengl_proc_address_fn, self._opengl_proc_address_ctx)
+        self.mpv_opengl_cb_init_gl(ctx, cast(None, c_char_p), self._opengl_proc_address_fn, self._opengl_proc_address_ctx)
 
     def set_wakeup_callback(self, ctx, func, d):
         self.wakeup = WakeupCallback(func) if func is not None else cast(None, WakeupCallback)
         self.wakeup_data = cast(None, c_void_p)
-        LIBMPV.mpv_set_wakeup_callback(ctx, self.wakeup, self.wakeup_data)
+        self.mpv_set_wakeup_callback(ctx, self.wakeup, self.wakeup_data)
 
     def command(self, ctx, name, *args):
         """ Execute a raw command """
