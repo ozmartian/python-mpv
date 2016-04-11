@@ -272,7 +272,7 @@ class MpvEventClientMessage(Structure):
 
 WakeupCallback = CFUNCTYPE(None, c_void_p)
 OpenGlCbUpdateFn = CFUNCTYPE(None, c_void_p)
-OpenGlCbGetProcAddrFn = CFUNCTYPE(c_int, c_void_p, c_char_p)
+OpenGlCbGetProcAddrFn = CFUNCTYPE(c_void_p, c_void_p, c_char_p)
 
 
 class NodeBuilder(object):

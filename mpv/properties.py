@@ -90,7 +90,7 @@ PROPERTIES = {
     'tv-contrast':                 (MpvFormat.INT64,  'rw'),
     'tv-hue':                      (MpvFormat.INT64,  'rw'),
     'tv-saturation':               (MpvFormat.INT64,  'rw'),
-    'vid':                         (MpvFormat.STRING,  'rw'),
+    'vid':                         (MpvFormat.STRING, 'rw'),
     'video':                       (MpvFormat.STRING, 'rw'), # alias for vid
     'video-align-x':               (MpvFormat.DOUBLE, 'rw'),
     'video-align-y':               (MpvFormat.DOUBLE, 'rw'),
