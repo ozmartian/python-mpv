@@ -6,18 +6,15 @@ from mpv.exceptions import MpvError
 log = logging.getLogger(__name__)
 
 
-class EventThread(QThread):
+class EventWorker(QObject):
     mpv_event = pyqtSignal(dict)
+    finished = pyqtSignal()
 
-    def __init__(self, mpv_instance, parent=None):
-        super().__init__(parent)
-        self.mpv = mpv_instance
-
-    def run(self):
+    def wait_event(self, mpv):
         log.debug('Event loop: starting.')
         while True:
             try:
-                event = self.mpv.wait_event(timeout=-1)
+                event = mpv.wait_event(timeout=-1)
                 devent = event.as_dict()
             except Exception as e:
                 log.debug('Event loop: ' + str(e))
@@ -28,15 +25,14 @@ class EventThread(QThread):
                 break
             elif devent['event_id'] == MpvEventID.SHUTDOWN:
                 log.debug('Event loop: Shutdown event.')
-                self.mpv.detach_destroy()
-                self.mpv = None
                 self.mpv_event.emit(devent)
                 break
             self.mpv_event.emit(devent)
+        self.finished.emit()
 
 
 class MpvTemplatePyQt(QObject):
-    wakeup = pyqtSignal()
+    wakeup = pyqtSignal(MPV)
 
     def initialize(self, observe=None, log_level=MpvLogLevel.INFO, log_handler=None, **kwargs):
         self.mpv = MPV(**kwargs)
@@ -49,16 +45,19 @@ class MpvTemplatePyQt(QObject):
             self.mpv.request_log_messages(log_level)
             self.log_handler = log_handler
 
-        self.event_loop = EventThread(self.mpv)
-        self.wakeup.connect(self.event_loop.start)
-        self.event_loop.mpv_event.connect(self.handle_event)
-        self.wakeup.emit()
+        self._event_thread = QThread(self)
+        self._event_worker = EventWorker()
+        self._event_worker.moveToThread(self._event_thread)
+        self._event_worker.mpv_event.connect(self.handle_event)
+        self._event_worker.finished.connect(self._event_thread.quit)
+        self._event_worker.finished.connect(self._event_worker.deleteLater)
+        self._event_thread.finished.connect(self._event_thread.deleteLater)
+        self.wakeup.connect(self._event_worker.wait_event)
+        self._event_thread.start()
+        self.wakeup.emit(self.mpv)
 
     def quit(self):
-        log.debug('quit')
         self.mpv.quit()  # trigger a SHUTDOWN event.
-        self.event_loop.wait()  # block until mpv dies.
-        self.mpv = None
 
     def handle_event(self, event):
         handler = getattr(self, 'on_{}'.format(MpvEventID.name(event['event_id']).lower()))
@@ -68,7 +67,10 @@ class MpvTemplatePyQt(QObject):
         pass
 
     def on_shutdown(self, event):
-        pass
+        self.mpv.detach_destroy()
+        self._event_thread.quit()
+        self._event_thread.wait()
+        self.mpv = None
 
     def on_log_message(self, event):
         msg = '{}: {}'.format(event['prefix'], event['text'])
@@ -163,7 +165,7 @@ class MpvTemplatePyQt(QObject):
     def seek_relative(self, ms):
         self.mpv.seek(ms / 1000.0, 'relative+exact')
 
-    @pyqtSlot(int)
+    @pyqtSlot(float)
     def set_volume(self, val):
         """ :param val: volume percentage as a float. [0.0, 100.0] """
         self.mpv.volume = val
