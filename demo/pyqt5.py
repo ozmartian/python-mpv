@@ -1,28 +1,30 @@
 import sys
 import os
 import logging
-from PyQt5.QtWidgets import (QWidget, QMainWindow, QAction, QMenu, QApplication,
+from PyQt5.QtWidgets import (QWidget, QMainWindow, QAction, QApplication,
                              QHBoxLayout, QSlider, QFileDialog, QLabel)
 from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QPoint
 import mpv
+import mpv.templates
+
 
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(name)-15s %(levelname)-8s %(message)s')
 mpv_log = logging.getLogger('libmpv')
 
 
-class Mpv(mpv.MpvTemplatePyQt):
+class Mpv(mpv.templates.MpvTemplatePyQt):
     duration = pyqtSignal(float)
     playback_time = pyqtSignal(float)
 
     def on_property_change(self, event):
-        if event['data'] is None:
+        if event.data is None:
             return
 
-        if event['name'] == 'playback-time':
-            self.playback_time.emit(event['data'])
-        elif event['name'] == 'duration':
-            self.duration.emit(event['data'])
+        if event.name == 'playback-time':
+            self.playback_time.emit(event.data)
+        elif event.name == 'duration':
+            self.duration.emit(event.data)
 
 
 class PlayerControls(QWidget):
@@ -32,7 +34,8 @@ class PlayerControls(QWidget):
         layout = QHBoxLayout(self)
 
         self.seek_slider = QSlider(orientation=Qt.Horizontal, parent=self)
-        self.volume_slider = QSlider(orientation=Qt.Horizontal, maximum=1000, parent=self)
+        self.volume_slider = QSlider(orientation=Qt.Horizontal, maximum=1000,
+                                     parent=self)
         self.playback_time = QLabel(parent=self)
         self.duration = QLabel(parent=self)
 
@@ -65,26 +68,25 @@ class Player(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        menu = self.menuBar().addMenu('&File')
-        on_open = QAction('Open', self)
-        on_open.triggered.connect(self.on_file_open)
-        menu.addAction(on_open)
-
+        # mpv setup
         self.mpv_container = QWidget(self)
-
         self.setCentralWidget(self.mpv_container)
         self.mpv_container.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self.mpv_container.setAttribute(Qt.WA_NativeWindow)
         wid = int(self.mpv_container.winId())
+        self.mpv = Mpv(parent=self,
+                       wid=wid,
+                       log_handler=mpv_log.debug,
+                       log_level=mpv.LogLevel.INFO,
+                       input_cursor=False,
+                       hwdec='auto',
+                       observe=['track-list', 'playback-time', 'duration'])
 
-        self.mpv = Mpv(self)
-
-        self.mpv.initialize(wid=wid,
-                            log_handler=mpv_log.debug,
-                            log_level=mpv.MpvLogLevel.INFO,
-                            input_cursor=False,
-                            hwdec='auto',
-                            observe=['track-list', 'playback-time', 'duration'])
+        # ui setup
+        menu = self.menuBar().addMenu('&File')
+        on_open = QAction('Open', self)
+        on_open.triggered.connect(self.on_file_open)
+        menu.addAction(on_open)
 
         self.controller = PlayerControls()
         self.controller.show()
@@ -118,9 +120,18 @@ class Player(QMainWindow):
 
 
 if __name__ == '__main__':
-    mpv.load_library()
+    os.environ['LC_NUMERIC'] = 'C'
+
     app = QApplication(sys.argv)
-    window = Player()
-    window.show()
-    window.controller.move(QPoint(window.x() + window.width(), window.y()))
-    sys.exit(app.exec_())
+    try:
+        window = Player()
+    except mpv.ApiVersionError as e:
+        print('libmpv version error. ' + str(e))
+        sys.exit(0)
+    except mpv.LibraryNotLoadedError as e:
+        print('couldnt load libmpv. ' + str(e))
+        sys.exit(0)
+    else:
+        window.show()
+        window.controller.move(QPoint(window.x() + window.width(), window.y()))
+        sys.exit(app.exec_())

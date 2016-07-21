@@ -1,17 +1,11 @@
 __title__ = 'mpv'
-__version__ = '0.2'
+__version__ = '0.3.0'
+__libmpv_version__ = (1, 20)
 
-from .api import MPV, api_version, load_library, load_lua
-from .types import MpvLogLevel, MpvEventID, MpvFormat, ErrorCode
-from .exceptions import MpvError
+from .api import Mpv
+from .types import LogLevel, Format, EventID, ErrorCode, EndFileReason, SubApi
+from .exceptions import MpvError, ApiVersionError, LibraryNotLoadedError
 from .properties import PROPERTIES
-from .template import MpvTemplate
-
-try:
-    from .templateqt import MpvTemplatePyQt
-except (ImportError, NameError):
-    pass
-
 
 # Set default logging handler to avoid "No handler found" warnings.
 import logging

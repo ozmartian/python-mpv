@@ -1,4 +1,9 @@
 dist
+build
+docs/build
+.coverage
+.vscode
+.eggs
 mpv.egg-info
 __pycache__
 *.swo
