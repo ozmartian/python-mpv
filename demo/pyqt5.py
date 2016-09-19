@@ -120,8 +120,6 @@ class Player(QMainWindow):
 
 
 if __name__ == '__main__':
-    os.environ['LC_NUMERIC'] = 'C'
-
     app = QApplication(sys.argv)
     try:
         window = Player()

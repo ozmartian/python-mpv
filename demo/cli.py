@@ -24,7 +24,6 @@ class Mpv(mpv.templates.MpvTemplate):
 
 
 if __name__ == '__main__':
-    os.environ['LC_NUMERIC'] = 'C'
     logging.basicConfig(level=logging.DEBUG,
                         format='%(asctime)s %(name)-15s %(levelname)-8s %(message)s')
     mpv_log = logging.getLogger('libmpv')

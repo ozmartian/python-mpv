@@ -1,5 +1,6 @@
 import logging
 import platform
+import locale
 from ctypes import (CDLL, POINTER, RTLD_GLOBAL, addressof, cast, c_int,
                     c_ulong, c_void_p, c_char_p, c_ulonglong, c_double,
                     py_object, pointer)
@@ -43,6 +44,7 @@ class LibMPV(object):
         return (ver >> 16, ver & 0xFFFF)
 
     def load_library(self, name=None):
+        locale.setlocale(locale.LC_NUMERIC, 'C')
         if name is not None:
             self.backend = CDLL(name)
         else:
