@@ -119,7 +119,7 @@ class Player(QMainWindow):
         self.mpv.quit()
 
 
-if __name__ == '__main__':
+def main():
     app = QApplication(sys.argv)
     try:
         window = Player()
@@ -133,3 +133,6 @@ if __name__ == '__main__':
         window.show()
         window.controller.move(QPoint(window.x() + window.width(), window.y()))
         sys.exit(app.exec_())
+
+if __name__ == '__main__':
+    main()
